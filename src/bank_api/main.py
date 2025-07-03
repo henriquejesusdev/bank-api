@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Path, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, PositiveFloat
+from pydantic import BaseModel, PositiveFloat, Field
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from typing import List
@@ -25,10 +25,19 @@ Base = declarative_base()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+# Configuração da aplicação FastAPI com documentação detalhada
 app = FastAPI(
-    title="API Bancária",
-    description="API RESTful para gerenciamento de contas correntes e transações",
-    version="1.0.0"
+    title="API Bancária Assíncrona",
+    description="Uma API RESTful assíncrona para gerenciamento de contas correntes, transações bancárias e autenticação de usuários com JWT. Inclui endpoints para criação de usuários, autenticação, realização de depósitos/saques e consulta de extrato de contas.",
+    version="1.0.0",
+    contact={
+        "name": "Suporte API",
+        "email": "suporte@bankapi.com",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
 )
 
 # Modelos do banco de dados
@@ -54,35 +63,35 @@ class Transaction(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Modelos Pydantic
+# Modelos Pydantic com documentação detalhada
 class UserCreate(BaseModel):
-    username: str
-    password: str
+    username: str = Field(..., description="Nome de usuário único para autenticação", example="joao.silva")
+    password: str = Field(..., description="Senha do usuário (mínimo 8 caracteres)", example="senha123")
 
 class TransactionCreate(BaseModel):
-    type: str  # "deposit" or "withdrawal"
-    amount: PositiveFloat
+    type: str = Field(..., description="Tipo de transação: 'deposit' para depósito ou 'withdrawal' para saque", example="deposit")
+    amount: PositiveFloat = Field(..., description="Valor da transação (deve ser positivo)", example=100.50)
 
 class TransactionResponse(BaseModel):
-    id: int
-    type: str
-    amount: float
-    timestamp: datetime
+    id: int = Field(..., description="Identificador único da transação")
+    type: str = Field(..., description="Tipo de transação: 'deposit' ou 'withdrawal'")
+    amount: float = Field(..., description="Valor da transação")
+    timestamp: datetime = Field(..., description="Data e hora da transação (UTC)")
 
     class Config:
         from_attributes = True
 
 class AccountResponse(BaseModel):
-    id: int
-    balance: float
-    transactions: List[TransactionResponse] = []
+    id: int = Field(..., description="Identificador único da conta")
+    balance: float = Field(..., description="Saldo atual da conta")
+    transactions: List[TransactionResponse] = Field(default=[], description="Lista de transações associadas à conta")
 
     class Config:
         from_attributes = True
 
 class Token(BaseModel):
-    access_token: str
-    token_type: str
+    access_token: str = Field(..., description="Token JWT para autenticação")
+    token_type: str = Field(..., description="Tipo do token, geralmente 'bearer'")
 
 # Funções auxiliares
 def verify_password(plain_password, hashed_password):
@@ -124,10 +133,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
-# Endpoints
-@app.post("/users/", response_model=Token)
+# Endpoints com documentação detalhada
+@app.post(
+    "/users/",
+    response_model=Token,
+    tags=["Usuários"],
+    summary="Cria um novo usuário",
+    description="Cria um novo usuário com um nome de usuário e senha, retorna um token JWT e cria automaticamente uma conta associada ao usuário.",
+    responses={
+        200: {"description": "Usuário criado com sucesso, token JWT retornado"},
+        422: {"description": "Erro de validação nos dados fornecidos"},
+    }
+)
 async def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    """Cria um novo usuário e retorna um token JWT."""
     hashed_password = get_password_hash(user.password)
     db_user = User(username=user.username, hashed_password=hashed_password)
     db.add(db_user)
@@ -142,9 +160,18 @@ async def create_user(user: UserCreate, db: Session = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/token", response_model=Token)
+@app.post(
+    "/token",
+    response_model=Token,
+    tags=["Autenticação"],
+    summary="Autentica um usuário",
+    description="Autentica um usuário com usernameagenda username e password, retornando um token JWT para acesso aos endpoints protegidos.",
+    responses={
+        200: {"description": "Autenticação bem-sucedida, token JWT retornado"},
+        401: {"description": "Credenciais inválidas"},
+    }
+)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Autentica um usuário e retorna um token JWT."""
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -155,14 +182,25 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/accounts/{account_id}/transactions/", response_model=TransactionResponse)
+@app.post(
+    "/accounts/{account_id}/transactions/",
+    response_model=TransactionResponse,
+    tags=["Transações"],
+    summary="Cria uma transação",
+    description="Cria uma nova transação (depósito ou saque) para uma conta específica. Requer autenticação JWT e valida saldo para saques.",
+    responses={
+        200: {"description": "Transação criada com sucesso"},
+        400: {"description": "Tipo de transação inválido ou saldo insuficiente"},
+        401: {"description": "Usuário não autenticado"},
+        404: {"description": "Conta não encontrada ou não autorizada"},
+    }
+)
 async def create_transaction(
-    account_id: int,
-    transaction: TransactionCreate,
+    account_id: int = Path(..., description="ID da conta corrente", example=1),
+    transaction: TransactionCreate = Body(..., description="Detalhes da transação a ser criada"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Cria uma nova transação (depósito ou saque) para uma conta."""
     account = db.query(Account).filter(Account.id == account_id, Account.user_id == current_user.id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or not authorized")
@@ -191,13 +229,23 @@ async def create_transaction(
     
     return db_transaction
 
-@app.get("/accounts/{account_id}/", response_model=AccountResponse)
+@app.get(
+    "/accounts/{account_id}/",
+    response_model=AccountResponse,
+    tags=["Contas"],
+    summary="Consulta detalhes da conta",
+    description="Retorna os detalhes de uma conta, incluindo saldo e extrato de transações. Requer autenticação JWT.",
+    responses={
+        200: {"description": "Detalhes da conta retornados com sucesso"},
+        401: {"description": "Usuário não autenticado"},
+        404: {"description": "Conta não encontrada ou não autorizada"},
+    }
+)
 async def get_account(
-    account_id: int,
+    account_id: int = Path(..., description="ID da conta corrente", example=1),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Retorna os detalhes da conta e seu extrato de transações."""
     account = db.query(Account).filter(Account.id == account_id, Account.user_id == current_user.id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or not authorized")
